@@ -1,0 +1,2 @@
+# Supported FastMCP API used by securecrt_server.py.
+mcp>=1.20,<2

@@ -1,0 +1,11 @@
+# Local Python environment and generated files
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local secrets, editor state, and logs
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
