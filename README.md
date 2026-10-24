@@ -92,6 +92,7 @@ Pager handling is explicit: read output, then call `send_input(..., text=" ")` f
 
 ## Code map
 
+- [Toy_examples](Toy_examples/README.md) — a standalone beginner example with line-by-line comments and `send`, `read`, and `stop` commands. It uses localhost TCP and reads the visible screen; the MCP bridge behavior and protections described above do not apply to it.
 - [securecrt_server.py](securecrt_server.py) — FastMCP tools exposed to Codex; stdio transport.
 - [bridge_client.py](bridge_client.py) — async local RPC client; does not automatically retry writes whose delivery is uncertain.
 - [securecrt_bridge.py](securecrt_bridge.py) — SecureCRT script entry point; loads the bridge and profile selector.
