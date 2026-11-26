@@ -25,10 +25,11 @@ When the bridge starts, it asks me to select a profile:
 - `IOSXE-readonly` or `IOSXE-full`
 - `PANOS-readonly` or `PANOS-full`
 - `Linux-full`
+- `ASA-readonly`
 
 This tells the agent which device shell it is working with and which commands are allowed.
 
-The current read-only profiles allow `show` and `ping` with simple arguments. Full profiles allow configuration commands too. These rules are defined in `command_profiles.py` and checked by both the server and the bridge.
+The IOS XE and PAN-OS read-only profiles allow `show` and `ping` with simple arguments. The ASA read-only profile allows `show` and `packet-tracer`. Full profiles allow configuration commands too. These rules are defined in `command_profiles.py` and checked by both the server and the bridge.
 
 ## Using it
 

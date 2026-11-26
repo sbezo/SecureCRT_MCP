@@ -16,10 +16,44 @@ from pathlib import Path
 MAX_OUTPUT = 1_000_000
 MAX_REQUEST = 64_000
 MAX_JOBS = 10
+OUTPUT_BLOCK_SIZE = 4096
+READ_BUDGET = 0.05
 # ReadString returns an empty string on timeout, even after receiving data.
 # Match each ASCII character so unfinished CLI lines are captured immediately.
 # Non-ASCII text preceding a match is returned by ReadString too.
 CHARACTERS = [chr(i) for i in range(1, 128)]
+
+
+class OutputBuffer:
+    """Bounded text blocks; appending never copies the whole transcript."""
+
+    def __init__(self):
+        self.blocks = []
+        self.size = 0
+        self.truncated = False
+
+    def append(self, text):
+        remaining = MAX_OUTPUT - self.size
+        if len(text) > remaining:
+            self.truncated = True
+        text = text[:remaining]
+        position = 0
+        while position < len(text):
+            if not self.blocks or len(self.blocks[-1]) == OUTPUT_BLOCK_SIZE:
+                self.blocks.append("")
+            count = min(len(text) - position, OUTPUT_BLOCK_SIZE - len(self.blocks[-1]))
+            self.blocks[-1] += text[position:position + count]
+            self.size += count
+            position += count
+
+    def read(self, start, end):
+        parts = []
+        while start < end:
+            block_index, offset = divmod(start, OUTPUT_BLOCK_SIZE)
+            count = min(end - start, OUTPUT_BLOCK_SIZE - offset)
+            parts.append(self.blocks[block_index][offset:offset + count])
+            start += count
+        return "".join(parts)
 
 
 def runtime_directory():
@@ -191,15 +225,30 @@ class SessionEngine:
             if prompt is None:
                 raise ValueError("Probe the idle prompt first, or supply expected_prompt")
             prompt = validate_prompt(prompt)
+        capture_mode = request.get("capture_mode", "auto")
+        auto_paging = request.get("auto_paging", True)
+        if not isinstance(auto_paging, bool):
+            raise ValueError("auto_paging must be a boolean")
+        if capture_mode not in ("auto", "characters", "lines"):
+            raise ValueError("capture_mode must be auto, characters, or lines")
+        if kind == "probe":
+            capture_mode = "characters"
+        elif capture_mode == "auto":
+            # Restrict automatic line capture to read-only IOS XE show output.
+            fast_show = (get_command_profile(self.session_id) == "IOSXE-readonly"
+                         and command.split()[0].lower() == "show")
+            capture_mode = "lines" if fast_show else "characters"
         while len(self.jobs) >= MAX_JOBS:
             self.jobs.popitem(last=False)
         self.jobs[job_id] = {
             "job_id": job_id, "session_id": self.session_id,
             "kind": kind, "command": command, "status": "running",
-            "output": "", "truncated": False, "line": "", "prompt": prompt,
+            "output": OutputBuffer(), "line": "", "prompt": prompt,
             "started": self.clock(), "deadline": self.clock() + timeout,
             "last_data": self.clock(), "interrupted": False,
-            "completion": None,
+            "completion": None, "waiting_for_input": False,
+            "capture_mode": capture_mode, "capture_may_be_incomplete": False,
+            "auto_paging": auto_paging and kind == "run", "pages_advanced": 0,
         }
         self.active = job_id
         # Enable buffering BEFORE sending; idle output isn't mistaken for a reply.
@@ -217,18 +266,22 @@ class SessionEngine:
             raise ValueError("Unknown/expired job; only the last %s jobs are kept" % MAX_JOBS)
         job = self.jobs[job_id]
         data = job["output"]
-        if not isinstance(cursor, int) or not 0 <= cursor <= len(data):
+        if not isinstance(cursor, int) or not 0 <= cursor <= data.size:
             raise ValueError("Cursor must be within the captured output")
         if not isinstance(limit, int) or not 1 <= limit <= 64_000:
             raise ValueError("Limit must be between 1 and 64000 characters")
-        end = min(len(data), cursor + limit)
+        end = min(data.size, cursor + limit)
         return {
             "session_id": self.session_id, "job_id": job_id,
             "status": job["status"], "command": job["command"],
-            "output": data[cursor:end], "next_cursor": end,
-            "has_more": end < len(data), "truncated": job["truncated"],
+            "output": data.read(cursor, end), "next_cursor": end,
+            "has_more": end < data.size, "truncated": data.truncated,
             "active": self.active == job_id, "prompt": job["prompt"],
             "completion": job["completion"],
+            "waiting_for_input": job["waiting_for_input"],
+            "capture_mode": job["capture_mode"],
+            "capture_may_be_incomplete": job["capture_may_be_incomplete"],
+            "auto_paging": job["auto_paging"], "pages_advanced": job["pages_advanced"],
             "elapsed_seconds": round(job.get("finished", self.clock()) - job["started"], 2),
             "error": job.get("error"),
         }
@@ -238,23 +291,37 @@ class SessionEngine:
         job["status"] = status
         job["completion"] = completion
         job["finished"] = self.clock()
+        job["waiting_for_input"] = False
         self.active = None
         self.screen.Synchronous = False
 
-    def _append(self, value):
+    def _append(self, value, received_at=None):
         job = self.jobs[self.active]
-        remaining = MAX_OUTPUT - len(job["output"])
-        job["output"] += value[:remaining]
-        if len(value) > remaining:
-            job["truncated"] = True
-        job["last_data"] = self.clock()
+        job["output"].append(value)
+        job["last_data"] = self.clock() if received_at is None else received_at
+        # Only the last terminal line is needed for prompt detection.
+        last_break = max(value.rfind("\r"), value.rfind("\n"))
+        if last_break >= 0:
+            job["line"] = ""
+            value = value[last_break + 1:]
         for char in value:
-            if char in "\r\n":
-                job["line"] = ""
-            elif char in "\b\x7f":
+            if char in "\b\x7f":
                 job["line"] = job["line"][:-1]
             elif char.isprintable():
                 job["line"] = (job["line"] + char)[-1024:]
+        # Only a standalone pager marker qualifies; never answer questions.
+        job["waiting_for_input"] = job["line"].strip() == "--More--"
+
+    def _advance_pager(self, job):
+        if not job["auto_paging"] or not job["waiting_for_input"] or job["interrupted"]:
+            return
+        authorize_input(self.session_id, " ", False)
+        # Consume the marker before Send: trailing spaces or a slow reply must
+        # not cause another advance. A failed Send is never retried.
+        job["waiting_for_input"] = False
+        job["line"] = ""
+        self.screen.Send(" ")
+        job["pages_advanced"] += 1
 
     def check_completion(self, job, text, index):
         """Recognize the prompt, or mark a timeout without releasing the tab."""
@@ -281,26 +348,62 @@ class SessionEngine:
 
     def pump(self):
         if not self.active:
-            return
+            return False
         job = self.jobs[self.active]
+        parts = []
+        received_at = job["last_data"]
         try:
+            # Native properties also cross the SecureCRT API boundary. Check
+            # connection once per batch, rather than once per character.
             if not self.tab.Session.Connected:
                 self._finish("disconnected", "connection_closed")
                 self.stopping = True
-                return
-            text = self.screen.ReadString(CHARACTERS, 1)
-            index = self.screen.MatchIndex
-            if index:
-                text += CHARACTERS[index - 1]
-            if text:
-                self._append(text)
-            if not self.active:
-                return
+                return False
+            until = self.clock() + READ_BUDGET
+            matches = CHARACTERS
+            if job["capture_mode"] == "lines":
+                matches = ["\n", job["prompt"], "--More--"]
+            tail = job["line"][-8:]
+            while True:
+                text = self.screen.ReadString(matches, 1)
+                index = self.screen.MatchIndex
+                if index:
+                    text += matches[index - 1]
+                if text:
+                    parts.append(text)
+                    received_at = self.clock()
+                    tail = (tail + text)[-8:]
+                    if tail == "--More--":
+                        # Flush at the marker, before another blocking read.
+                        # This also handles markers split across character reads.
+                        self._append("".join(parts), received_at)
+                        parts.clear()
+                        self._advance_pager(job)
+                        tail = job["line"][-8:]
+                if not text or self.clock() >= until:
+                    break
+            if parts:
+                self._append("".join(parts), received_at)
+                parts.clear()
+            if job["capture_mode"] == "lines" and not index:
+                # After a known prompt/pager, silence is expected. Else a
+                # timeout might have discarded an unmatched fragment. Report
+                # that uncertainty, but keep line capture: a silent pause alone
+                # must not slow every subsequent page to character-by-character
+                # reads. Changing modes cannot recover discarded text anyway.
+                at_boundary = (job["line"].rstrip() == job["prompt"]
+                               or job["waiting_for_input"])
+                if not at_boundary:
+                    job["capture_may_be_incomplete"] = True
             self.check_completion(job, text, index)
+            return bool(text)
         except Exception as exc:
+            if parts:
+                self._append("".join(parts), received_at)
             job["error"] = str(exc)
             self._finish("failed", "native_api_error")
             self.stopping = True
+            return False
 
     def interrupt(self, request):
         """Send Ctrl+C only to the job that currently owns the tab."""
@@ -308,6 +411,7 @@ class SessionEngine:
             raise ValueError("That job is not active; no Ctrl+C was sent")
         job = self.jobs[self.active]
         self.screen.Send("\x03")
+        job["waiting_for_input"] = False
         job["interrupted"] = True
         job["status"] = "interrupt_requested"
         return self.output(self.active)
@@ -327,6 +431,8 @@ class SessionEngine:
         if enter:
             text += "\r"
         self.screen.Send(text)
+        if text:
+            self.jobs[self.active]["waiting_for_input"] = False
         return self.output(self.active)
 
     def dispatch(self, request):
@@ -424,14 +530,15 @@ def run_bridge(crt, profile):
         # 3. Handle requests and read terminal output on this script thread.
         while not engine.stopping:
             service_requests(engine, requests)
-            # Bound continuous-output processing so RPC requests stay responsive.
-            until = time.monotonic() + 0.05
-            while engine.active and not engine.stopping and time.monotonic() < until:
-                engine.pump()
+            if engine.stopping:
+                break
+            # Batch continuous output. A native read with no data can still
+            # take one second: ReadString exposes a timeout in whole seconds.
+            reading = engine.pump()
             if not tab.Session.Connected:
                 break
             if engine.active:
-                crt.Sleep(10)
+                crt.Sleep(1 if reading else 10)
             else:
                 crt.Sleep(30)
     finally:

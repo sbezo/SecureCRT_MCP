@@ -25,6 +25,11 @@ mcp = FastMCP(
         "it sends Enter, so never use it over a partially typed command or interactive program. "
         "run_command returns a job ID and captured terminal text, including command echo. "
         "Use read_output for running/timed-out jobs and additional output pages. "
+        "The bridge automatically sends one space at a standalone --More-- pager by default. "
+        "Set auto_paging=false for manual paging; waiting_for_input then signals a pager. "
+        "IOSXE-readonly show commands use faster line capture by default. "
+        "If capture_may_be_incomplete is true, do not treat the output as a complete transcript. "
+        "Use capture_mode=characters for commands with partial or interactive output. "
         "Timeout does not stop the remote command. interrupt_command explicitly sends Ctrl+C. "
         "In readonly profiles, send_input only permits one space for a pager; "
         "interactive answers require a full-access profile. "
@@ -69,6 +74,8 @@ async def probe_prompt(session_id: str) -> dict[str, Any]:
 async def run_command(
     session_id: str, command: str, expected_prompt: str | None = None,
     timeout_seconds: int = 30, wait_seconds: int = 10,
+    capture_mode: str = "auto",
+    auto_paging: bool = True,
 ) -> dict[str, Any]:
     """Run one command through an existing authenticated tab and capture native stream text.
 
@@ -78,8 +85,21 @@ async def run_command(
     CLI mode, supply the new prompt. Output includes echo and prompt, not stdout/stderr
     or an exit code. timeout_seconds (1–300) flags a job as timed_out but does NOT stop it.
     wait_seconds (0–30) limits this tool's wait; read_output continues the same job.
+    auto_paging=True sends one space per standalone --More-- marker inside the
+    bridge, without LLM round trips. pages_advanced counts those sends. Set False
+    for manual paging and early return with waiting_for_input=True. Other
+    interactive prompts are never answered automatically.
+    capture_mode=auto uses lines for IOSXE-readonly show commands and characters
+    otherwise. lines matches newlines, the full prompt, and --More--. An unexpected
+    read timeout can discard partial text: capture_may_be_incomplete is then set
+    but line capture stays enabled through pauses. Use characters from the start
+    for interactive or partial-line output; discarded text cannot be recovered.
     """
     validate_command(command)
+    if capture_mode not in ("auto", "characters", "lines"):
+        raise ValueError("capture_mode must be auto, characters, or lines")
+    if not isinstance(auto_paging, bool):
+        raise ValueError("auto_paging must be a boolean")
     authorize_command(session_id, command)
     if expected_prompt is not None:
         validate_prompt(expected_prompt)
@@ -88,7 +108,8 @@ async def run_command(
     job_id = uuid.uuid4().hex
     result = await bridge_client.request(
         session_id, "run", job_id=job_id, command=command,
-        expected_prompt=expected_prompt, timeout=timeout_seconds,
+        expected_prompt=expected_prompt, timeout=timeout_seconds, capture_mode=capture_mode,
+        auto_paging=auto_paging,
     )
     if wait_seconds:
         return await bridge_client.wait_for_job(session_id, job_id, wait_seconds)
@@ -110,7 +131,8 @@ async def read_output(session_id: str, job_id: str, cursor: int = 0, limit: int 
 async def send_input(session_id: str, job_id: str, text: str, press_enter: bool = False) -> dict[str, Any]:
     """Send explicit printable input to an ACTIVE job, e.g. a space to advance a pager.
 
-    Confirmation answers can change remote state. Input is never sent automatically.
+    Confirmation answers can change remote state. Only recognized --More-- pagers
+    are advanced automatically when auto_paging is enabled.
     Use press_enter=True for a line response; otherwise characters are sent as-is.
     """
     authorize_input(session_id, text, press_enter)

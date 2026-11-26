@@ -12,7 +12,7 @@ You start `securecrt_bridge.py` inside SecureCRT for each tab to share. It loads
 
 The `Screen` object is SecureCRT API terminology. The bridge captures new terminal text while a job is active. It does not read scrollback or call `Screen.Get`, take screenshots, use OCR, activate tabs, or control the desktop.
 
-> **Status:** Experimental. Validate against a lab or disposable session before using it with production devices. This project has not had an independent security audit or broad compatibility/performance testing, and no automated MCP regression tests are currently included.
+> **Status:** Experimental. Validate against a lab or disposable session before using it with production devices. This project has not had an independent security audit or broad compatibility/performance testing. Local capture regression tests use a simulated SecureCRT stream; they do not replace testing in SecureCRT.
 
 ## Requirements
 
@@ -47,7 +47,7 @@ The profile declares the expected shell (`panos`, `iosxe`, `linux`, or `asa`) an
 
 ## Tools and first command
 
-Profiles are defined in [command_profiles.py](command_profiles.py). `PANOS-readonly` and `IOSXE-readonly` allow commands beginning with `show` or `ping`; `ASA-readonly` allows `show` or `packet-tracer`. These profiles allow simple arguments only. Separators and other special characters are rejected. Interactive input in those profiles is limited to one space for pager advance, without Enter. Full profiles permit any printable single-line command and printable interactive input. Restart the MCP server and each bridge after editing profiles.
+Profiles are defined in [command_profiles.py](command_profiles.py). `PANOS-readonly` and `IOSXE-readonly` allow commands beginning with `show` or `ping`; `ASA-readonly` allows `show` or `packet-tracer`. These profiles accept simple arguments only. Separators and other special characters are rejected. Interactive input in those profiles is limited to one space for pager advance, without Enter. Full profiles permit any printable single-line command and printable interactive input. Restart the MCP server and each bridge after editing profiles.
 
 `list_sessions` reports `allowed_command_prefixes` from the loaded profile. A null value means unrestricted commands only when a profile is selected.
 
@@ -69,13 +69,13 @@ First call `list_sessions`, select the intended `session_id`, then call `probe_p
 
 `wait_seconds` bounds this MCP call's wait (default 10, maximum 30). `timeout_seconds` marks an unfinished job `timed_out` (default 30, maximum 300). **Neither timeout nor cancelling an MCP request stops the remote command.** Capture continues and the tab remains busy. Read the same job or explicitly interrupt it; do not resend it. If a transport fails after sending, inspect `recent_job_ids` before retrying.
 
-Pager handling is explicit: read output, then call `send_input(..., text=" ")` for the next page. Nothing automatically answers confirmations. Avoid manual typing while a job is active. Use **Script → Cancel** in SecureCRT or `detach_session` to stop the bridge; neither automatically interrupts a remote command. The original capture settings are restored during normal cleanup.
+Pager handling is automatic by default (`auto_paging=true`): the bridge sends one space immediately when it reads a standalone Cisco `--More--` marker, then continues capturing without an LLM round trip. It sends only once per marker and reports `pages_advanced`. This applies in both line and character capture modes, continues while a timed-out job remains active, and stops after an explicit interrupt. Other interactive questions and confirmation prompts are never answered automatically. Set `auto_paging=false` for manual paging: a pager sets `waiting_for_input=true` and `run_command` returns early. Call `send_input(..., text=" ")` for the next page, then `read_output` using the previous `next_cursor`. Avoid manual typing while a job is active. Use **Script → Cancel** in SecureCRT or `detach_session` to stop the bridge; neither automatically interrupts a remote command. The original capture settings are restored during normal cleanup.
 
 ## Security and trust model
 
 - The bridge can act with the permissions of the connected SecureCRT session. Treat enabling a tab as granting the MCP client the ability to issue commands and send interactive input within the selected profile. Use only tabs and accounts you are authorized to expose.
 - `*-full` profiles are unrestricted for printable single-line commands and interactive input. They can make configuration changes or other consequential actions. Use them only when that level of access is intended; prefer a least-privilege device account and a lab session.
-- The profiles named `*-readonly` are **prefix restrictions, not a security sandbox or guarantee of harmless commands**. They allow broad command families (`show`, plus `ping` or `packet-tracer` depending on the profile), which can reveal sensitive information or affect network resources. Tighten the prefixes for your environment.
+- The profiles named `*-readonly` are **prefix restrictions, not a security sandbox or guarantee of harmless commands**. Depending on the profile, they allow broad `show`, `ping`, or `packet-tracer` command families, which can reveal sensitive information or affect network resources. Tighten the prefixes for your environment.
 - The Unix socket is local, in `/tmp/securecrt-mcp-<uid>/`, with a 0700 directory and 0600 socket. This limits access to the same macOS user; it does not authenticate individual processes running as that user. Do not run untrusted local programs as that account while the bridge is active.
 - `list_sessions` returns the SecureCRT tab caption and saved-session path as metadata. Command text and captured output are returned to the MCP client and may be included in Codex/model context. Do not share tabs that display secrets or sensitive data unless permitted by your organization's policy.
 - Terminal output is untrusted data. It may contain misleading instructions or sensitive information; the agent should treat it as data, not authority.
@@ -88,11 +88,31 @@ Pager handling is explicit: read output, then call `send_input(..., text=" ")` f
 - Only new data during an active job is captured. Idle output, old screen contents, and scrollback are not retained. Capture is for text CLIs, not full-screen applications. `IgnoreEscape` removes terminal escape sequences; this is not a byte-exact recorder. A Unicode-only fragment at a `ReadString` timeout may be lost.
 - Completion is inferred when the full expected prompt matches the current line after one second of stream inactivity. Similar text in ordinary output can produce a false completion. CLI mode changes and unusual prompts may need `expected_prompt`.
 - The bridge keeps at most 1,000,000 characters per job and the ten most recent jobs in memory. Responses return 32,000 characters by default; use cursors to read further. Truncation is reported. No transcript file is written.
+- Capture processing is batched for approximately 50 ms during continuous output. Stored text uses 4,096-character blocks, so appending does not copy the entire transcript and cursor reads only join the requested page. Connection checks occur per batch, not per character.
+- `capture_mode=auto` uses line reads for `show` commands in `IOSXE-readonly`; other commands and prompt probing use character reads. Line reads match newline, the full expected prompt, and `--More--`, reducing native API calls and allowing larger portions of the screen to update together. Set `capture_mode=characters` for interactive commands or partial-line output, or `lines` to explicitly opt another command into line capture.
+- Native `ReadString` discards unmatched text on timeout. In line mode, an unexpected timeout away from a recognized prompt/pager sets `capture_may_be_incomplete=true`. Line capture stays enabled: a silent pause must not permanently downgrade the rest of a long command to character reads. The flag is conservative (even a silent pause may trigger it) and remains set after completion. Do not treat flagged output as a complete transcript. Use `capture_mode=characters` from the start for interactive or partial-line output; discarded text cannot be recovered. Trailing unmatched whitespace after a prompt/pager may also be omitted. Commands are never retried automatically; recognized pagers are advanced when `auto_paging` is enabled.
+- The native whole-second timeout can still delay queued requests by about one second when output pauses; the 50 ms batch budget cannot interrupt a native read. Prompt completion still requires one second of inactivity.
 - A crashed bridge can leave a stale socket; `list_sessions` reports unavailable bridges. Session IDs are random UUIDs, so a restarted bridge gets a new ID.
+
+## Local capture tests
+
+From the repository root:
+
+```sh
+python3 -B -m unittest discover -s . -p 'test_*.py'
+```
+
+Tests cover automatic and manual paging, duplicate-space prevention, leaving questions unanswered, interruption, pager send failures, cursor pagination, truncation, invalid options, and preserving line capture through a pause. They simulate the SecureCRT API; they do not measure native API or GUI rendering performance.
+
+A native diagnostic on SecureCRT 9.7.3 captured the same 1,859-character IOS XE `show version` output in 1.354 seconds using 1,859 character reads and 0.300 seconds using 44 line/prompt reads (approximately 4.5× faster in that run). This measures capture time, not screen-rendering time independently. The unmatched-timeout test also confirmed that subsequent reads do not recover discarded text.
+
+After changing `bridge_core.py`, stop the bridge with **Script → Cancel** in an idle tab, then run `securecrt_bridge.py` again and select the profile. Existing scripts keep their loaded code until restarted.
+After changing `bridge_client.py` or `securecrt_server.py`, restart/reload the MCP server as well.
 
 ## Code map
 
 - [Toy_examples](Toy_examples/README.md) — a standalone beginner example with line-by-line comments and `send`, `read`, and `stop` commands. It uses localhost TCP and reads the visible screen; the MCP bridge behavior and protections described above do not apply to it.
+
 - [securecrt_server.py](securecrt_server.py) — FastMCP tools exposed to Codex; stdio transport.
 - [bridge_client.py](bridge_client.py) — async local RPC client; does not automatically retry writes whose delivery is uncertain.
 - [securecrt_bridge.py](securecrt_bridge.py) — SecureCRT script entry point; loads the bridge and profile selector.

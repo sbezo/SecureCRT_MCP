@@ -84,6 +84,7 @@ async def wait_for_job(session_id: str, job_id: str, wait_seconds: float) -> dic
     deadline = time.monotonic() + wait_seconds
     while True:
         result = await request(session_id, "output", job_id=job_id)
-        if result["status"] != "running" or time.monotonic() >= deadline:
+        if (result["status"] != "running" or result.get("waiting_for_input")
+                or time.monotonic() >= deadline):
             return result
         await asyncio.sleep(0.2)
