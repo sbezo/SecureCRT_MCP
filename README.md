@@ -40,14 +40,14 @@ For each tab you intend to share:
 
 1. Connect normally, finish login/autologin, and leave an **empty, idle command prompt**.
 2. In SecureCRT choose **Script → Run** and select `securecrt_bridge.py` (or use a button configured for that script).
-3. Choose the profile matching the tab in the prompt. The current order is `1` PANOS-readonly, `2` PANOS-full, `3` IOSXE-readonly, `4` IOSXE-full, `5` Linux-full. Cancel or leave the answer empty to abort.
+3. Choose the profile matching the tab in the prompt. The current order is `1` PANOS-readonly, `2` PANOS-full, `3` IOSXE-readonly, `4` IOSXE-full, `5` Linux-full, `6` ASA-readonly. Cancel or leave the answer empty to abort.
 4. Leave the bridge script running. Repeat in each additional tab; each bridge gets a separate session ID and profile.
 
-The profile declares the expected shell (`panos`, `iosxe`, or `linux`) and permissions; it does **not** detect or verify the connected device. Choose the matching profile yourself. The agent cannot change it. No Accessibility or Screen Recording permission is required. A login script must finish before starting the bridge.
+The profile declares the expected shell (`panos`, `iosxe`, `linux`, or `asa`) and permissions; it does **not** detect or verify the connected device. Choose the matching profile yourself. The agent cannot change it. No Accessibility or Screen Recording permission is required. A login script must finish before starting the bridge.
 
 ## Tools and first command
 
-Profiles are defined in [command_profiles.py](command_profiles.py). The two `*-readonly` profiles allow commands beginning with `show` or `ping`, using simple arguments. Separators and other special characters are rejected. Interactive input in those profiles is limited to one space for pager advance, without Enter. Full profiles permit any printable single-line command and printable interactive input. Restart the MCP server and each bridge after editing profiles.
+Profiles are defined in [command_profiles.py](command_profiles.py). `PANOS-readonly` and `IOSXE-readonly` allow commands beginning with `show` or `ping`; `ASA-readonly` allows `show` or `packet-tracer`. These profiles allow simple arguments only. Separators and other special characters are rejected. Interactive input in those profiles is limited to one space for pager advance, without Enter. Full profiles permit any printable single-line command and printable interactive input. Restart the MCP server and each bridge after editing profiles.
 
 `list_sessions` reports `allowed_command_prefixes` from the loaded profile. A null value means unrestricted commands only when a profile is selected.
 
@@ -61,7 +61,7 @@ Profiles are defined in [command_profiles.py](command_profiles.py). The two `*-r
 | `interrupt_command` | Send Ctrl+C to a specific active job |
 | `detach_session` | Stop sharing without closing the SecureCRT connection |
 
-The selected profile declares `device_shell`: `IOSXE-*` → `iosxe` (Cisco IOS XE CLI), `PANOS-*` → `panos` (PAN-OS CLI), and `Linux-full` → `linux` (Linux shell). `device_shell_source` is `user_selected_profile`; this is not automatic detection. If the tab changes device or shell, stop and restart the bridge with the matching profile.
+The selected profile declares `device_shell`: `IOSXE-*` → `iosxe` (Cisco IOS XE CLI), `PANOS-*` → `panos` (PAN-OS CLI), `Linux-full` → `linux` (Linux shell), and `ASA-readonly` → `asa` (Cisco ASA CLI). `device_shell_source` is `user_selected_profile`; this is not automatic detection. If the tab changes device or shell, stop and restart the bridge with the matching profile.
 
 First call `list_sessions`, select the intended `session_id`, then call `probe_prompt(session_id)` and an allowed diagnostic command (for example, `show clock` in `IOSXE-readonly`). **Prompt probing sends Enter.** Only probe when the tab is at an empty, idle prompt—not while a command is partially typed, a program is running, or login is incomplete.
 
@@ -75,7 +75,7 @@ Pager handling is explicit: read output, then call `send_input(..., text=" ")` f
 
 - The bridge can act with the permissions of the connected SecureCRT session. Treat enabling a tab as granting the MCP client the ability to issue commands and send interactive input within the selected profile. Use only tabs and accounts you are authorized to expose.
 - `*-full` profiles are unrestricted for printable single-line commands and interactive input. They can make configuration changes or other consequential actions. Use them only when that level of access is intended; prefer a least-privilege device account and a lab session.
-- The profiles named `*-readonly` are **prefix restrictions, not a security sandbox or guarantee of harmless commands**. They allow broad `show` and `ping` command families, which can reveal sensitive information or affect network resources. Tighten the prefixes for your environment.
+- The profiles named `*-readonly` are **prefix restrictions, not a security sandbox or guarantee of harmless commands**. They allow broad command families (`show`, plus `ping` or `packet-tracer` depending on the profile), which can reveal sensitive information or affect network resources. Tighten the prefixes for your environment.
 - The Unix socket is local, in `/tmp/securecrt-mcp-<uid>/`, with a 0700 directory and 0600 socket. This limits access to the same macOS user; it does not authenticate individual processes running as that user. Do not run untrusted local programs as that account while the bridge is active.
 - `list_sessions` returns the SecureCRT tab caption and saved-session path as metadata. Command text and captured output are returned to the MCP client and may be included in Codex/model context. Do not share tabs that display secrets or sensitive data unless permitted by your organization's policy.
 - Terminal output is untrusted data. It may contain misleading instructions or sensitive information; the agent should treat it as data, not authority.

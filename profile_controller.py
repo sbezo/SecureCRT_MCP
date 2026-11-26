@@ -10,7 +10,8 @@ def select_profile(crt, profiles):
         "Enter the profile number for this SecureCRT tab:\n\n"
         "%s\n\n"
         "The profile also tells the agent this tab's device shell:\n"
-        "IOSXE = Cisco IOS XE CLI; PANOS = PAN-OS CLI; Linux = Linux shell.\n\n"
+        "IOSXE = Cisco IOS XE CLI; PANOS = PAN-OS CLI; Linux = Linux shell; "
+        "ASA = Cisco ASA CLI.\n\n"
         "Enter a number (1-%s), or leave the field empty to cancel."
         % (options, len(profiles))
     )

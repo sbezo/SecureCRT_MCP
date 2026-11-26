@@ -25,6 +25,10 @@ COMMAND_PROFILES = {
         "shell": "linux",
         "commands": None,
     },
+    "ASA-readonly": {
+        "shell": "asa",
+        "commands": ["show", "packet-tracer"],
+    },
 }
 
 
