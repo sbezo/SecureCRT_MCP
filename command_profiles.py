@@ -7,7 +7,7 @@ None means full access. Keep the order stable: the selector numbers follow it.
 COMMAND_PROFILES = {
     "PANOS-readonly": {
         "shell": "panos",
-        "commands": ["show", "ping"],
+        "commands": ["show", "ping", "set cli pager off"],
     },
     "PANOS-full": {
         "shell": "panos",
@@ -15,7 +15,7 @@ COMMAND_PROFILES = {
     },
     "IOSXE-readonly": {
         "shell": "iosxe",
-        "commands": ["show", "ping"],
+        "commands": ["show", "ping", "terminal length 0"],
     },
     "IOSXE-full": {
         "shell": "iosxe",

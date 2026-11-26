@@ -18,10 +18,7 @@ MAX_REQUEST = 64_000
 MAX_JOBS = 10
 OUTPUT_BLOCK_SIZE = 4096
 READ_BUDGET = 0.05
-# ReadString returns an empty string on timeout, even after receiving data.
-# Match each ASCII character so unfinished CLI lines are captured immediately.
-# Non-ASCII text preceding a match is returned by ReadString too.
-CHARACTERS = [chr(i) for i in range(1, 128)]
+PROMPT_ENDINGS = ["#", "$", ">", "%"]
 
 
 class OutputBuffer:
@@ -225,19 +222,9 @@ class SessionEngine:
             if prompt is None:
                 raise ValueError("Probe the idle prompt first, or supply expected_prompt")
             prompt = validate_prompt(prompt)
-        capture_mode = request.get("capture_mode", "auto")
         auto_paging = request.get("auto_paging", True)
         if not isinstance(auto_paging, bool):
             raise ValueError("auto_paging must be a boolean")
-        if capture_mode not in ("auto", "characters", "lines"):
-            raise ValueError("capture_mode must be auto, characters, or lines")
-        if kind == "probe":
-            capture_mode = "characters"
-        elif capture_mode == "auto":
-            # Restrict automatic line capture to read-only IOS XE show output.
-            fast_show = (get_command_profile(self.session_id) == "IOSXE-readonly"
-                         and command.split()[0].lower() == "show")
-            capture_mode = "lines" if fast_show else "characters"
         while len(self.jobs) >= MAX_JOBS:
             self.jobs.popitem(last=False)
         self.jobs[job_id] = {
@@ -247,7 +234,7 @@ class SessionEngine:
             "started": self.clock(), "deadline": self.clock() + timeout,
             "last_data": self.clock(), "interrupted": False,
             "completion": None, "waiting_for_input": False,
-            "capture_mode": capture_mode, "capture_may_be_incomplete": False,
+            "capture_may_be_incomplete": False,
             "auto_paging": auto_paging and kind == "run", "pages_advanced": 0,
         }
         self.active = job_id
@@ -279,7 +266,6 @@ class SessionEngine:
             "active": self.active == job_id, "prompt": job["prompt"],
             "completion": job["completion"],
             "waiting_for_input": job["waiting_for_input"],
-            "capture_mode": job["capture_mode"],
             "capture_may_be_incomplete": job["capture_may_be_incomplete"],
             "auto_paging": job["auto_paging"], "pages_advanced": job["pages_advanced"],
             "elapsed_seconds": round(job.get("finished", self.clock()) - job["started"], 2),
@@ -354,16 +340,18 @@ class SessionEngine:
         received_at = job["last_data"]
         try:
             # Native properties also cross the SecureCRT API boundary. Check
-            # connection once per batch, rather than once per character.
+            # connection once per batch.
             if not self.tab.Session.Connected:
                 self._finish("disconnected", "connection_closed")
                 self.stopping = True
                 return False
             until = self.clock() + READ_BUDGET
-            matches = CHARACTERS
-            if job["capture_mode"] == "lines":
-                matches = ["\n", job["prompt"], "--More--"]
-            tail = job["line"][-8:]
+            matches = ["\n", "--More--"]
+            if job["kind"] == "probe":
+                # The full prompt is not known yet; capture through its ending.
+                matches += PROMPT_ENDINGS
+            else:
+                matches.append(job["prompt"])
             while True:
                 text = self.screen.ReadString(matches, 1)
                 index = self.screen.MatchIndex
@@ -372,27 +360,24 @@ class SessionEngine:
                 if text:
                     parts.append(text)
                     received_at = self.clock()
-                    tail = (tail + text)[-8:]
-                    if tail == "--More--":
+                    if index and matches[index - 1] == "--More--":
                         # Flush at the marker, before another blocking read.
-                        # This also handles markers split across character reads.
                         self._append("".join(parts), received_at)
                         parts.clear()
                         self._advance_pager(job)
-                        tail = job["line"][-8:]
                 if not text or self.clock() >= until:
                     break
             if parts:
                 self._append("".join(parts), received_at)
                 parts.clear()
-            if job["capture_mode"] == "lines" and not index:
+            if not index:
                 # After a known prompt/pager, silence is expected. Else a
                 # timeout might have discarded an unmatched fragment. Report
-                # that uncertainty, but keep line capture: a silent pause alone
-                # must not slow every subsequent page to character-by-character
-                # reads. Changing modes cannot recover discarded text anyway.
+                # that uncertainty; discarded text cannot be recovered.
                 at_boundary = (job["line"].rstrip() == job["prompt"]
                                or job["waiting_for_input"])
+                if job["kind"] == "probe":
+                    at_boundary = bool(re.fullmatch(r"[^\r\n]{1,239}[#$>%]", job["line"].rstrip()))
                 if not at_boundary:
                     job["capture_may_be_incomplete"] = True
             self.check_completion(job, text, index)

@@ -27,9 +27,9 @@ mcp = FastMCP(
         "Use read_output for running/timed-out jobs and additional output pages. "
         "The bridge automatically sends one space at a standalone --More-- pager by default. "
         "Set auto_paging=false for manual paging; waiting_for_input then signals a pager. "
-        "IOSXE-readonly show commands use faster line capture by default. "
+        "All sessions use delimiter-based capture: newline, expected prompt, and --More--. "
         "If capture_may_be_incomplete is true, do not treat the output as a complete transcript. "
-        "Use capture_mode=characters for commands with partial or interactive output. "
+        "Unmatched partial or interactive output may be lost on a read timeout. "
         "Timeout does not stop the remote command. interrupt_command explicitly sends Ctrl+C. "
         "In readonly profiles, send_input only permits one space for a pager; "
         "interactive answers require a full-access profile. "
@@ -41,6 +41,10 @@ mcp = FastMCP(
         "linux means a Linux shell, and asa means Cisco ASA CLI. "
         "Use that shell's command syntax. This is derived from the selected profile, not auto-detection; "
         "if the user changes the tab's device or shell, its profile must be selected again. "
+        "Before listing output, disable pagination once per session with run_command: "
+        "for iosxe use 'terminal length 0'; for panos use 'set cli pager off' at the operational prompt. "
+        "These commands are allowed in the corresponding readonly profiles too. "
+        "Wait for the command to finish and the prompt to return before running the listing. "
         "Use each session's allowed_command_prefixes for its configured permissions; "
         "null means unrestricted commands when a command_profile is selected. "
         "Readonly profiles reject command separators and special characters. "
@@ -74,7 +78,6 @@ async def probe_prompt(session_id: str) -> dict[str, Any]:
 async def run_command(
     session_id: str, command: str, expected_prompt: str | None = None,
     timeout_seconds: int = 30, wait_seconds: int = 10,
-    capture_mode: str = "auto",
     auto_paging: bool = True,
 ) -> dict[str, Any]:
     """Run one command through an existing authenticated tab and capture native stream text.
@@ -89,15 +92,11 @@ async def run_command(
     bridge, without LLM round trips. pages_advanced counts those sends. Set False
     for manual paging and early return with waiting_for_input=True. Other
     interactive prompts are never answered automatically.
-    capture_mode=auto uses lines for IOSXE-readonly show commands and characters
-    otherwise. lines matches newlines, the full prompt, and --More--. An unexpected
-    read timeout can discard partial text: capture_may_be_incomplete is then set
-    but line capture stays enabled through pauses. Use characters from the start
-    for interactive or partial-line output; discarded text cannot be recovered.
+    All sessions capture chunks ending at a newline, the full prompt, or --More--.
+    An unexpected read timeout can discard partial text and sets
+    capture_may_be_incomplete. Discarded text cannot be recovered.
     """
     validate_command(command)
-    if capture_mode not in ("auto", "characters", "lines"):
-        raise ValueError("capture_mode must be auto, characters, or lines")
     if not isinstance(auto_paging, bool):
         raise ValueError("auto_paging must be a boolean")
     authorize_command(session_id, command)
@@ -108,7 +107,7 @@ async def run_command(
     job_id = uuid.uuid4().hex
     result = await bridge_client.request(
         session_id, "run", job_id=job_id, command=command,
-        expected_prompt=expected_prompt, timeout=timeout_seconds, capture_mode=capture_mode,
+        expected_prompt=expected_prompt, timeout=timeout_seconds,
         auto_paging=auto_paging,
     )
     if wait_seconds:
