@@ -40,14 +40,14 @@ For each tab you intend to share:
 
 1. Connect normally, finish login/autologin, and leave an **empty, idle command prompt**.
 2. In SecureCRT choose **Script → Run** and select `securecrt_bridge.py` (or use a button configured for that script).
-3. Choose the profile matching the tab in the prompt. The current order is `1` PANOS-readonly, `2` PANOS-full, `3` IOSXE-readonly, `4` IOSXE-full, `5` Linux-full, `6` ASA-readonly. Cancel or leave the answer empty to abort.
+3. Choose the profile matching the tab in the prompt. The current order is `1` PANOS-readonly, `2` PANOS-full, `3` IOSXE-readonly, `4` IOSXE-full, `5` Linux-full, `6` ASA-readonly, `7` ASA-full. Cancel or leave the answer empty to abort.
 4. Leave the bridge script running. Repeat in each additional tab; each bridge gets a separate session ID and profile.
 
 The profile declares the expected shell (`panos`, `iosxe`, `linux`, or `asa`) and permissions; it does **not** detect or verify the connected device. Choose the matching profile yourself. The agent cannot change it. No Accessibility or Screen Recording permission is required. A login script must finish before starting the bridge.
 
 ## Tools and first command
 
-Profiles are defined in [command_profiles.py](command_profiles.py). `PANOS-readonly` and `IOSXE-readonly` allow commands beginning with `show` or `ping`, plus `set cli pager off` for PAN-OS and `terminal length 0` for IOS XE; `ASA-readonly` allows `show` or `packet-tracer`. Before listing output, the agent must disable pagination once per session using the corresponding command (at the operational prompt for PAN-OS) and wait for the prompt to return. These profiles accept simple arguments only. Separators and other special characters are rejected. Interactive input in those profiles is limited to one space for pager advance, without Enter. Full profiles permit any printable single-line command and printable interactive input. Restart the MCP server and each bridge after editing profiles.
+Profiles are defined in [command_profiles.py](command_profiles.py). `PANOS-readonly` and `IOSXE-readonly` allow commands beginning with `show` or `ping`, plus `set cli pager off` for PAN-OS and `terminal length 0` for IOS XE; `ASA-readonly` allows `show`, `packet-tracer`, or `terminal pager 0`. Before listing output, the agent must disable pagination once per session using the corresponding command (at the operational prompt for PAN-OS; for ASA, use `terminal pager 0` at the privileged EXEC prompt) and wait for the prompt to return. These profiles accept simple arguments only. Separators and other special characters are rejected. Interactive input in those profiles is limited to one space for pager advance, without Enter. Full profiles permit any printable single-line command and printable interactive input. Restart the MCP server and each bridge after editing profiles.
 
 `list_sessions` reports `allowed_command_prefixes` from the loaded profile. A null value means unrestricted commands only when a profile is selected.
 
@@ -61,7 +61,7 @@ Profiles are defined in [command_profiles.py](command_profiles.py). `PANOS-reado
 | `interrupt_command` | Send Ctrl+C to a specific active job |
 | `detach_session` | Stop sharing without closing the SecureCRT connection |
 
-The selected profile declares `device_shell`: `IOSXE-*` → `iosxe` (Cisco IOS XE CLI), `PANOS-*` → `panos` (PAN-OS CLI), `Linux-full` → `linux` (Linux shell), and `ASA-readonly` → `asa` (Cisco ASA CLI). `device_shell_source` is `user_selected_profile`; this is not automatic detection. If the tab changes device or shell, stop and restart the bridge with the matching profile.
+The selected profile declares `device_shell`: `IOSXE-*` → `iosxe` (Cisco IOS XE CLI), `PANOS-*` → `panos` (PAN-OS CLI), `Linux-full` → `linux` (Linux shell), and `ASA-*` → `asa` (Cisco ASA CLI). `device_shell_source` is `user_selected_profile`; this is not automatic detection. If the tab changes device or shell, stop and restart the bridge with the matching profile.
 
 First call `list_sessions`, select the intended `session_id`, then call `probe_prompt(session_id)` and an allowed diagnostic command (for example, `show clock` in `IOSXE-readonly`). **Prompt probing sends Enter.** Only probe when the tab is at an empty, idle prompt—not while a command is partially typed, a program is running, or login is incomplete.
 

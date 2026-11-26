@@ -43,12 +43,13 @@ mcp = FastMCP(
         "if the user changes the tab's device or shell, its profile must be selected again. "
         "Before listing output, disable pagination once per session with run_command: "
         "for iosxe use 'terminal length 0'; for panos use 'set cli pager off' at the operational prompt. "
+        "For asa use 'terminal pager 0' at the privileged EXEC prompt. "
         "These commands are allowed in the corresponding readonly profiles too. "
         "Wait for the command to finish and the prompt to return before running the listing. "
         "Use each session's allowed_command_prefixes for its configured permissions; "
         "null means unrestricted commands when a command_profile is selected. "
         "Readonly profiles reject command separators and special characters. "
-        "PANOS-full, IOSXE-full, and Linux-full allow all printable single-line commands. "
+        "PANOS-full, IOSXE-full, Linux-full, and ASA-full allow all printable single-line commands. "
         "No screenshots, screen scraping, credential extraction, or separate SSH connections."
     ),
 )

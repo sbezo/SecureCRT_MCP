@@ -27,7 +27,11 @@ COMMAND_PROFILES = {
     },
     "ASA-readonly": {
         "shell": "asa",
-        "commands": ["show", "packet-tracer"],
+        "commands": ["show", "packet-tracer", "terminal pager 0"],
+    },
+    "ASA-full": {
+        "shell": "asa",
+        "commands": None,
     },
 }
 
