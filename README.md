@@ -2,12 +2,13 @@
 
 A FastMCP server that lets Codex work through an **existing authenticated SecureCRT tab** on macOS. SecureCRT keeps the connection, credentials, login state, jump-host shell, and CLI context. This project does not open another SSH connection or read/copy saved credentials.
 
-```text
-Codex ── stdio/MCP ── securecrt_server.py ── bridge_client.py
-                                             │ private Unix socket (JSON)
-SecureCRT tab ◀── Screen.Send / ReadString ── bridge_core.py
-```
 
+> tl;dr   
+> quick start instructions are in `quick_start.md` file    
+> graphical explanation is in `communication_diagrams.md` file   
+
+
+---
 You start `securecrt_bridge.py` inside SecureCRT for each tab to share. It loads `bridge_core.py` and `profile_controller.py`; the selected policy is in `command_profiles.py`. The bridge binds to that fixed tab, not whichever tab is later selected in the GUI.
 
 The `Screen` object is SecureCRT API terminology. The bridge captures new terminal text while a job is active. It does not read scrollback or call `Screen.Get`, take screenshots, use OCR, activate tabs, or control the desktop.
@@ -107,6 +108,8 @@ After changing `bridge_core.py`, stop the bridge with **Script → Cancel** in a
 After changing `bridge_client.py` or `securecrt_server.py`, restart/reload the MCP server as well.
 
 ## Code map
+
+- [Communication diagrams](communication_diagrams.md) — process and thread boundaries, every production function and class, RPC routing, and command execution sequence.
 
 - [Toy_examples](Toy_examples/README.md) — a standalone beginner example with line-by-line comments and `send`, `read`, and `stop` commands. It uses localhost TCP and reads the visible screen; the MCP bridge behavior and protections described above do not apply to it.
 
